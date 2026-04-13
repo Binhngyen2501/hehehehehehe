@@ -8,8 +8,8 @@ from __future__ import annotations
 import sys
 import os
 
-# Thêm tro_gia_project vào sys.path để dùng chung models, db, services
-_PROJECT_DIR = os.path.join(os.path.dirname(__file__), "..", "tro_gia_project")
+# Thêm frontend vào sys.path để dùng chung models, db, services
+_PROJECT_DIR = os.path.join(os.path.dirname(__file__), "..", "frontend")
 if _PROJECT_DIR not in sys.path:
     sys.path.insert(0, os.path.abspath(_PROJECT_DIR))
 
