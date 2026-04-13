@@ -347,6 +347,94 @@ ACTION_LABELS = {
 }
 
 
+def room_contact_auto_reply(message: str, room) -> tuple[str, bool]:
+    """Returns (reply_text, should_forward_to_admin).
+    Handles common tenant questions about a specific room automatically."""
+    msg = message.lower()
+
+    if any(k in msg for k in ["xin chào", "chào", "hello", "hi ", "alo"]):
+        return (
+            f"Xin chào! Tôi là trợ lý tự động của hệ thống. "
+            f"Tôi có thể giải đáp các câu hỏi cơ bản về phòng **{room.room_code}**. "
+            f"Nếu cần hỗ trợ thêm, admin sẽ phản hồi bạn sớm!",
+            False,
+        )
+
+    if any(k in msg for k in ["giá", "tiền thuê", "bao nhiêu", "chi phí", "phí thuê", "giá thuê"]):
+        amenities = []
+        if room.has_aircon: amenities.append("máy lạnh")
+        if room.has_fridge: amenities.append("tủ lạnh")
+        if room.has_water_heater: amenities.append("bình nóng lạnh")
+        if room.has_balcony: amenities.append("ban công")
+        if room.has_elevator: amenities.append("thang máy")
+        amenity_str = ", ".join(amenities) if amenities else "cơ bản"
+        return (
+            f"Phòng **{room.room_code}** có giá thuê **{money(room.current_rent)}/tháng**.\n"
+            f"- Diện tích: {float(room.area_m2)} m²\n"
+            f"- Tầng: {room.tang} | Khu vực: {room.khu_vuc}\n"
+            f"- Tiện ích: {amenity_str}",
+            False,
+        )
+
+    if any(k in msg for k in ["còn trống", "có phòng", "tình trạng", "trạng thái", "available", "đang thuê"]):
+        if room.status == "available":
+            return (
+                f"Phòng **{room.room_code}** hiện **còn trống** và sẵn sàng cho thuê! "
+                f"Giá {money(room.current_rent)}/tháng. Liên hệ admin để đặt phòng.",
+                False,
+            )
+        else:
+            return (
+                f"Phòng **{room.room_code}** hiện **đang có người thuê**. "
+                f"Vui lòng liên hệ admin để hỏi về các phòng trống khác.",
+                False,
+            )
+
+    if any(k in msg for k in ["tiện nghi", "tiện ích", "nội thất", "máy lạnh", "tủ lạnh", "nóng lạnh", "ban công", "thang máy", "wifi"]):
+        amenities = []
+        if room.has_aircon: amenities.append("❄️ Máy lạnh")
+        if room.has_fridge: amenities.append("🧊 Tủ lạnh")
+        if room.has_water_heater: amenities.append("🚿 Bình nóng lạnh")
+        if room.has_balcony: amenities.append("🌿 Ban công")
+        if room.has_elevator: amenities.append("🛗 Thang máy")
+        if amenities:
+            return (f"Phòng **{room.room_code}** có các tiện ích: {', '.join(amenities)}.", False)
+        else:
+            return (f"Phòng **{room.room_code}** có trang bị cơ bản. Hỏi admin để biết thêm chi tiết.", False)
+
+    if any(k in msg for k in ["địa chỉ", "vị trí", "đường", "quận", "khu vực", "ở đâu", "chỗ nào"]):
+        addr = room.address or "liên hệ admin để biết thêm"
+        return (
+            f"Phòng **{room.room_code}** nằm tại khu vực **{room.khu_vuc}**, tầng {room.tang}.\n"
+            f"Địa chỉ: {addr}.",
+            False,
+        )
+
+    if any(k in msg for k in ["diện tích", "rộng", "m2", "m²", "mét vuông"]):
+        return (f"Phòng **{room.room_code}** có diện tích **{float(room.area_m2)} m²**.", False)
+
+    if any(k in msg for k in ["hợp đồng", "đặt cọc", "cọc", "giấy tờ", "thủ tục", "cmnd", "căn cước", "ký hợp"]):
+        return (
+            f"Câu hỏi về hợp đồng/thủ tục đã được ghi nhận. "
+            f"**Admin sẽ xem xét và phản hồi bạn sớm** qua hệ thống thông báo!",
+            True,
+        )
+
+    if any(k in msg for k in ["thanh toán", "chuyển khoản", "ngân hàng", "momo", "tiền cọc", "đặt cọc"]):
+        return (
+            f"Thông tin thanh toán cần xác nhận từ admin. "
+            f"**Admin sẽ liên hệ bạn** về phương thức và chi tiết thanh toán!",
+            True,
+        )
+
+    # Default: forward to admin
+    return (
+        f"Cảm ơn bạn đã liên hệ! Câu hỏi của bạn đã được ghi nhận và "
+        f"**admin sẽ phản hồi sớm nhất có thể** qua hệ thống thông báo.",
+        True,
+    )
+
+
 def room_code_text(room: Room | None) -> str:
     if not room:
         return "N/A"
@@ -2690,7 +2778,7 @@ def render_audit_logs() -> None:
 
 def render_user_room_catalog(user: SessionUser) -> None:
     hero(APP_NAME)
-    
+
     with get_db() as db:
         rooms = db.execute(
             select(Room).options(joinedload(Room.images)).order_by(Room.room_id.desc())
@@ -2707,16 +2795,25 @@ def render_user_room_catalog(user: SessionUser) -> None:
         if detail_room:
             if st.button("⬅️ Quay lại danh sách phòng", key="close_detail_top"):
                 del st.session_state["detail_room_id"]
+                if f"room_chat_{detail_room_id}" in st.session_state:
+                    del st.session_state[f"room_chat_{detail_room_id}"]
                 st.rerun()
-                
-            st.markdown(f"## 🏠 Chi tiết: {room_code_text(detail_room)}")
-            
-            col_img, col_info = st.columns([1.2, 1])
+
+            # Load owner (admin) info for contact
+            with get_db() as db:
+                owner = db.get(User, detail_room.owner_id)
+
+            st.markdown(f"## 🏠 {room_code_text(detail_room)}")
+            status_badge = '<span style="background:#22c55e;color:white;padding:2px 10px;border-radius:12px;font-size:0.85rem;">Còn trống</span>' if detail_room.status == "available" else '<span style="background:#ef4444;color:white;padding:2px 10px;border-radius:12px;font-size:0.85rem;">Đang thuê</span>'
+            st.markdown(status_badge, unsafe_allow_html=True)
+            st.markdown("")
+
+            col_img, col_info = st.columns([1.3, 1])
             with col_img:
                 if detail_room.images:
                     valid_imgs = [img for img in detail_room.images if os.path.exists(img.image_url)]
                     if valid_imgs:
-                        for img in valid_imgs:
+                        for img in valid_imgs[:3]:
                             st.image(img.image_url, use_container_width=True)
                     else:
                         st.image("https://placehold.co/600x400/e2e8f0/94a3b8?text=Phòng+Trọ", use_container_width=True)
@@ -2727,18 +2824,16 @@ def render_user_room_catalog(user: SessionUser) -> None:
                 st.markdown("### 📋 Thông tin chi tiết")
                 st.markdown(f"- **Mã phòng:** {detail_room.room_code}")
                 st.markdown(f"- **Khu vực:** {detail_room.khu_vuc}")
-                st.markdown(f"- **Địa chỉ:** {detail_room.address or 'Chưa cập nhật'}")
+                st.markdown(f"- **Địa chỉ:** {detail_room.address or 'Liên hệ admin'}")
                 st.markdown(f"- **Diện tích:** {float(detail_room.area_m2)} m²")
                 st.markdown(f"- **Tầng:** {detail_room.tang}")
-                
+
                 st.markdown("---")
-                st.markdown("### 💰 Giá & Trạng thái")
-                suggested, bk = calculate_price_for_room(detail_room)
-                st.markdown(f"- **Giá thuê hiện tại:** {money(detail_room.current_rent)}")
-                st.markdown(f"- **Giá AI gợi ý:** {money(suggested)}")
-                status_text = "🟢 Còn trống" if detail_room.status == "available" else "🔴 Đang có người thuê"
-                st.markdown(f"- **Trạng thái:** {status_text}")
-                
+                st.markdown("### 💰 Giá thuê")
+                suggested, _ = calculate_price_for_room(detail_room)
+                st.markdown(f"<div style='font-size:1.4rem;font-weight:700;color:#3b82f6;'>{money(detail_room.current_rent)}<span style='font-size:0.9rem;color:#94a3b8;'>/tháng</span></div>", unsafe_allow_html=True)
+                st.caption(f"AI gợi ý: {money(suggested)}/tháng")
+
                 st.markdown("---")
                 st.markdown("### ✨ Tiện ích")
                 amenity_list = []
@@ -2748,10 +2843,92 @@ def render_user_room_catalog(user: SessionUser) -> None:
                 if detail_room.has_balcony: amenity_list.append("🌿 Ban công")
                 if detail_room.has_elevator: amenity_list.append("🛗 Thang máy")
                 if amenity_list:
-                    for a in amenity_list:
-                        st.markdown(f"  {a}")
+                    cols_am = st.columns(2)
+                    for idx, a in enumerate(amenity_list):
+                        cols_am[idx % 2].markdown(f"  {a}")
                 else:
-                    st.markdown("  Không có tiện ích bổ sung")
+                    st.markdown("  Cơ bản")
+
+            # --- Contact Panel ---
+            st.markdown("---")
+            st.markdown("### 📞 Thông tin liên hệ")
+            contact_cols = st.columns([1.5, 1, 1])
+            owner_name = owner.full_name if owner else "Chủ trọ"
+            owner_phone = owner.phone if owner else MOMO_PHONE
+            with contact_cols[0]:
+                st.markdown(
+                    f"""<div style="border:1px solid #334155;border-radius:12px;padding:1rem;">
+                    <div style="font-weight:600;font-size:1rem;">👤 {owner_name}</div>
+                    <div style="color:#94a3b8;font-size:0.85rem;">Chủ nhà / Quản lý</div>
+                    <div style="margin-top:0.4rem;font-size:0.95rem;">📱 <b>{owner_phone or 'Liên hệ qua hệ thống'}</b></div>
+                    </div>""",
+                    unsafe_allow_html=True,
+                )
+            with contact_cols[1]:
+                if owner_phone:
+                    st.link_button(f"📞 Gọi điện", f"tel:{owner_phone}", use_container_width=True, type="primary")
+                else:
+                    st.button("📞 Gọi điện", disabled=True, use_container_width=True)
+            with contact_cols[2]:
+                chat_key = f"show_chat_{detail_room_id}"
+                if st.button("💬 Nhắn tin với Admin", key=f"open_chat_{detail_room_id}", use_container_width=True):
+                    st.session_state[chat_key] = not st.session_state.get(chat_key, False)
+                    st.rerun()
+
+            # --- Inline Chat with Auto-Reply ---
+            chat_session_key = f"room_chat_{detail_room_id}"
+            if st.session_state.get(chat_key, False):
+                st.markdown("#### 💬 Nhắn tin về phòng này")
+                st.caption("Trả lời tự động các câu hỏi cơ bản. Câu hỏi về hợp đồng/thanh toán sẽ chuyển đến admin.")
+
+                if chat_session_key not in st.session_state:
+                    st.session_state[chat_session_key] = [
+                        {"role": "bot", "text": (
+                            f"Xin chào! Tôi là trợ lý tự động của phòng **{detail_room.room_code}**.\n\n"
+                            f"Bạn có thể hỏi tôi về:\n"
+                            f"- Giá thuê, diện tích, tầng\n"
+                            f"- Tiện ích (máy lạnh, wifi...)\n"
+                            f"- Tình trạng còn trống\n"
+                            f"- Địa chỉ / khu vực\n\n"
+                            f"Câu hỏi về hợp đồng hoặc thanh toán sẽ được chuyển đến admin."
+                        )}
+                    ]
+
+                chat_msgs = st.session_state[chat_session_key]
+                with st.container():
+                    for msg in chat_msgs:
+                        if msg["role"] == "user":
+                            with st.chat_message("user"):
+                                st.markdown(msg["text"])
+                        else:
+                            with st.chat_message("assistant"):
+                                st.markdown(msg["text"])
+
+                if user_msg := st.chat_input(f"Hỏi về phòng {detail_room.room_code}...", key=f"chat_input_{detail_room_id}"):
+                    chat_msgs.append({"role": "user", "text": user_msg})
+
+                    reply, forward_to_admin = room_contact_auto_reply(user_msg, detail_room)
+                    chat_msgs.append({"role": "bot", "text": reply})
+
+                    # Forward to admin if needed
+                    if forward_to_admin:
+                        with get_db() as db:
+                            admin = db.execute(select(User).where(User.role == "admin").limit(1)).scalar_one_or_none()
+                            if admin:
+                                from services.notification_service import send_user_to_admin_message
+                                send_user_to_admin_message(
+                                    db,
+                                    user_id=user.user_id,
+                                    admin_user_id=admin.user_id,
+                                    title=f"Khách hỏi về phòng {detail_room.room_code}",
+                                    message=f"{user.full_name}: {user_msg}",
+                                    notification_type="general",
+                                    related_entity_type="room",
+                                    related_entity_id=detail_room.room_id,
+                                )
+
+                    st.session_state[chat_session_key] = chat_msgs
+                    st.rerun()
 
             return # Early return so we don't render the grid
 
@@ -3070,15 +3247,27 @@ def render_user_payments(user: SessionUser) -> None:
                     confirm_key = f"confirm_pay_{p.payment_id}"
 
                     if not st.session_state.get(pay_key, False):
-                        if st.button("💳 Thanh toán", key=f"pay_btn_{p.payment_id}", use_container_width=True, type="primary"):
+                        st.markdown(
+                            f"""<div style="background:linear-gradient(135deg,#ae2070,#cc3385);border-radius:12px;padding:0.8rem;text-align:center;">
+                            <div style="color:white;font-size:1.1rem;font-weight:700;">💳 Thanh toán MoMo</div>
+                            <div style="color:#fce4ec;font-size:0.85rem;margin-top:0.3rem;">{money(p.amount)}</div>
+                            </div>""",
+                            unsafe_allow_html=True,
+                        )
+                        if st.button("📱 Hiện mã QR MoMo", key=f"pay_btn_{p.payment_id}", use_container_width=True, type="primary"):
                             st.session_state[pay_key] = True
                             st.rerun()
                     else:
-                        # Show QR inline
                         note = f"Phong {p.contract.room.room_code} ky {p.period} HD{p.contract_id}"
                         amount_int = int(p.amount)
 
-                        st.markdown("**📷 Quét QR MoMo:**")
+                        # MoMo branding header
+                        st.markdown(
+                            """<div style="background:linear-gradient(135deg,#ae2070,#cc3385);border-radius:10px;padding:0.6rem 1rem;text-align:center;margin-bottom:0.6rem;">
+                            <span style="color:white;font-weight:700;font-size:1rem;">📱 Quét QR bằng MoMo</span>
+                            </div>""",
+                            unsafe_allow_html=True,
+                        )
 
                         # Generate and show QR
                         static_qr_path = os.path.join(os.getcwd(), "static", "images", "qr_thanh_toan.png")
@@ -3088,13 +3277,11 @@ def render_user_payments(user: SessionUser) -> None:
                             st.image(static_qr_path, width=220, caption="Quét mã MoMo")
                             qr_displayed = True
                         else:
-                            # Generate dynamic QR
                             try:
                                 import qrcode
                                 import base64
                                 from io import BytesIO
 
-                                # MoMo payment URL format
                                 encoded_note = urllib.parse.quote(note)
                                 momo_url = f"2|99|{MOMO_PHONE}|{MOMO_NAME}||0|0|{amount_int}|{encoded_note}"
 
@@ -3108,46 +3295,37 @@ def render_user_payments(user: SessionUser) -> None:
                                 buf.seek(0)
                                 img_base64 = base64.b64encode(buf.getvalue()).decode()
 
-                                # Display using HTML for reliable rendering
                                 st.markdown(
-                                    f"""
-                                    <div style="text-align: center;">
-                                        <img src="data:image/png;base64,{img_base64}" width="220" style="border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);" />
-                                        <p style="color: #666; font-size: 14px; margin-top: 8px;">📱 Quét bằng app MoMo</p>
-                                    </div>
-                                    """,
-                                    unsafe_allow_html=True
+                                    f"""<div style="text-align:center;background:#fff;border-radius:12px;padding:0.8rem;">
+                                    <img src="data:image/png;base64,{img_base64}" width="200" style="border-radius:8px;" />
+                                    <div style="color:#ae2070;font-weight:600;margin-top:6px;">SĐT: {MOMO_PHONE}</div>
+                                    <div style="color:#666;font-size:0.8rem;">Chủ tài khoản: {MOMO_NAME}</div>
+                                    </div>""",
+                                    unsafe_allow_html=True,
                                 )
                                 qr_displayed = True
                             except Exception as e:
                                 st.error(f"❌ Lỗi tạo QR: {e}")
 
                         if not qr_displayed:
-                            # Fallback: show manual transfer info
-                            st.warning("⚠️ Không thể tạo QR tự động")
-                            st.info(f"**SĐT MoMo:** `{MOMO_PHONE}`")
-                            st.info(f"**Tên:** `{MOMO_NAME}`")
-                            st.info(f"**Số tiền:** {money(p.amount)}")
-                            st.info(f"**Nội dung CK:** `{note}`")
+                            st.markdown(
+                                f"""<div style="border:2px solid #ae2070;border-radius:10px;padding:0.8rem;text-align:center;">
+                                <div style="color:#ae2070;font-weight:700;">Chuyển khoản MoMo</div>
+                                <div>SĐT: <b>{MOMO_PHONE}</b></div>
+                                <div>Tên: <b>{MOMO_NAME}</b></div>
+                                <div>Số tiền: <b>{money(p.amount)}</b></div>
+                                </div>""",
+                                unsafe_allow_html=True,
+                            )
 
-                        st.caption(f"Nội dung: `{note}`")
+                        st.caption(f"Nội dung CK: `{note}`")
 
-                        col_auto, col_manual = st.columns(2)
+                        if st.button("✅ Tôi đã thanh toán MoMo", key=f"manual_confirm_{p.payment_id}", use_container_width=True, type="primary"):
+                            st.session_state[confirm_key] = True
 
-                        with col_auto:
-                            # Auto-check simulation
-                            if st.button("🔄 Tự động kiểm tra", key=f"check_auto_{p.payment_id}", use_container_width=True):
-                                with st.spinner("Đang kiểm tra giao dịch..."):
-                                    # Simulate delay - in real scenario this would check MoMo API
-                                    import time as time_module
-                                    time_module.sleep(2)
-                                    # Always success for demo (in real app, check actual transaction)
-                                    st.success("✅ Đã phát hiện thanh toán!")
-                                    st.session_state[confirm_key] = True
-
-                        with col_manual:
-                            if st.button("✅ Tôi đã chuyển khoản", key=f"manual_confirm_{p.payment_id}", use_container_width=True, type="primary"):
-                                st.session_state[confirm_key] = True
+                        if st.button("❌ Huỷ", key=f"cancel_pay_{p.payment_id}", use_container_width=True):
+                            st.session_state[pay_key] = False
+                            st.rerun()
 
                         # Complete payment if confirmed
                         if st.session_state.get(confirm_key, False):
@@ -3157,21 +3335,20 @@ def render_user_payments(user: SessionUser) -> None:
                                     db, user.user_id, "payments", str(p_updated.payment_id),
                                     "payment", new_data=serialize_model(p_updated)
                                 )
-                                # Notify admin
                                 admin = db.execute(select(User).where(User.role == "admin").limit(1)).scalar_one_or_none()
                                 if admin:
                                     create_notification(
                                         db,
                                         sender_id=user.user_id,
                                         recipient_id=admin.user_id,
-                                        title=f"Thanh toán QR - Phòng {p.contract.room.room_code}",
-                                        message=f"Khách {user.full_name} vừa thanh toán {money(p.amount)} cho kỳ {p.period}.",
+                                        title=f"Thanh toán MoMo - Phòng {p.contract.room.room_code}",
+                                        message=f"Khách {user.full_name} đã thanh toán {money(p.amount)} (kỳ {p.period}) qua MoMo.",
                                         notification_type="payment"
                                     )
                                 notify_payment_paid(db, p_updated, confirmed_by_admin=False)
                             st.session_state[pay_key] = False
                             st.session_state[confirm_key] = False
-                            st.success("🎉 Thanh toán thành công! Hóa đơn đã được cập nhật.")
+                            st.success("🎉 Thanh toán thành công! Admin sẽ xác nhận sớm.")
                             import time
                             time.sleep(1)
                             st.rerun()
@@ -3361,8 +3538,8 @@ def render_user_management(user: SessionUser) -> None:
             with cols[1]:
                 new_status = st.selectbox(
                     "Trạng thái",
-                    ["active", "banned", "suspended"],
-                    index=["active", "banned", "suspended"].index(u.status) if u.status in ["active", "banned", "suspended"] else 0,
+                    ["active", "locked"],
+                    index=["active", "locked"].index(u.status) if u.status in ["active", "locked"] else 0,
                     key=f"status_{u.user_id}"
                 )
                 if new_status != u.status:
@@ -3432,22 +3609,31 @@ def render_user_ai_assistant(user: SessionUser) -> None:
             available_rooms_context = "\\n".join(parts)
 
         system_instruction = f"""
-Bạn là AI Trợ lý Người Thuê chuyên nghiệp, xưng "Tôi" gọi "Quý khách" hoặc "Bạn". Nhiệm vụ của bạn là giải đáp mọi câu hỏi của họ một cách lịch sự, trang trọng, dựa vào dữ liệu cá nhân sau đây mà hệ thống đã trích xuất:
+Bạn là **Trợ lý AI Người Thuê** của hệ thống quản lý nhà trọ, xưng "Tôi", gọi người dùng là "Quý khách" hoặc "Bạn".
 
-THÔNG TIN NGƯỜI THUÊ:
+## Dữ liệu cá nhân của Quý khách
+
+**THÔNG TIN NGƯỜI THUÊ:**
 {tenant_context}
 
-CÁC HỢP ĐỒNG CỦA HỌ:
+**HỢP ĐỒNG ĐANG CÓ:**
 {contracts_context}
 
-HÓA ĐƠN CHƯA THANH TOÁN:
+**HÓA ĐƠN CHƯA THANH TOÁN:**
 {unpaid_context}
 
-THÔNG TIN PHÒNG TRỐNG (CÓ THỂ CHO THUÊ):
+**PHÒNG TRỐNG CÓ THỂ THUÊ:**
 {available_rooms_context}
 
-Nếu Quý khách hỏi về phòng trống mới, hãy tư vấn cho họ. Đặc biệt, nếu Quý khách muốn **so sánh các phòng**, hãy so sánh đối chiếu rõ ràng về mức giá, diện tích, vị trí tầng, và các tiện ích (máy lạnh, thang máy...) để họ dễ dàng lựa chọn.
-Trả lời ngắn gọn, lịch sự, có format bằng markdown rõ ràng. Không tự bịa ra dữ liệu hợp đồng mà dùng đúng thông tin được cung cấp.
+## Nguyên tắc trả lời
+
+1. **Chính xác:** Chỉ sử dụng dữ liệu được cung cấp, không bịa đặt số liệu hợp đồng hay hóa đơn.
+2. **Tư vấn phòng:** Khi Quý khách hỏi xem phòng hoặc so sánh phòng, hãy trình bày rõ ràng theo dạng bảng hoặc danh sách: mức giá, diện tích, tầng, tiện ích (máy lạnh, thang máy...).
+3. **Hóa đơn:** Nếu Quý khách hỏi về hóa đơn chưa trả, hướng dẫn họ vào mục "Hóa đơn của tôi" để thanh toán qua MoMo QR.
+4. **Hợp đồng:** Giải thích nội dung hợp đồng, ngày hết hạn, giá thuê một cách rõ ràng.
+5. **Thanh toán:** Hướng dẫn thanh toán qua MoMo QR trong mục "Hóa đơn của tôi". Nếu cần xác nhận thêm, bảo Quý khách liên hệ admin.
+6. **Phong cách:** Ngắn gọn, lịch sự, dùng markdown (bold, list, table) cho dễ đọc.
+7. **Giới hạn:** Nếu không có dữ liệu hoặc câu hỏi vượt ngoài phạm vi hệ thống, lịch sự hướng dẫn liên hệ admin.
 """
 
     chat_history = st.session_state.get('user_ai_chat_history', [])
@@ -3550,19 +3736,29 @@ def render_ai_agent(user: SessionUser) -> None:
         debt_details = "\\n".join([f"HD#{p.contract_id} (Kỳ {p.period}): {money(p.amount)}" for p in unpaid_sliced])
         
         system_instruction = f"""
-Bạn là AI Agent Vận Hành vô cùng chuyên nghiệp hỗ trợ Admin quản lý hệ thống nhà trọ. Xưng "tôi" gọi "bạn" hoặc "Admin". Dưới đây là dữ liệu toàn cảnh hệ thống lúc này:
+Bạn là **AI Agent Vận Hành** chuyên nghiệp, hỗ trợ Admin quản lý hệ thống nhà trọ toàn diện. Xưng "tôi", gọi "Admin".
 
-TỔNG QUAN:
-- Tổng phòng: {total_rooms} (Trống: {available_rooms}, Đang thuê: {occupied_rooms})
-- Danh sách một số phòng trống (khả dụng): {avails_str if avails_str else 'Không có'}
-- Số hợp đồng đang thu: {len(contracts)}
-- Hóa đơn chưa thanh toán (Công nợ): {len(unpaid_payments)} hóa đơn, Tổng {money(unpaid_total)}
-- Doanh thu đã thu: {money(paid_total)}
+## Dữ liệu hệ thống hiện tại
 
-CHI TIẾT CÔNG NỢ (TOP 15):
-{debt_details}
+**TỔNG QUAN:**
+- Tổng phòng: **{total_rooms}** (Trống: {available_rooms} | Đang thuê: {occupied_rooms})
+- Tỷ lệ lấp đầy: **{round(occupied_rooms/total_rooms*100) if total_rooms else 0}%**
+- Phòng trống hiện có: {avails_str if avails_str else 'Không có'}
+- Hợp đồng active: **{len(contracts)}**
+- Công nợ chưa thu: **{len(unpaid_payments)} hóa đơn** — Tổng **{money(unpaid_total)}**
+- Doanh thu đã thu: **{money(paid_total)}**
 
-Luôn phân tích trung thực dựa trên số liệu được cấp. Khi trả lời, làm nổi bật số liệu bằng in đậm hoặc format markdown dạng list, table. Gợi ý các hành động quản trị (vd: cần nhắc nợ phòng nào, có cấu hình giảm giá phòng trống nào không) nếu thấy số liệu có vẻ cần giải quyết.
+**CHI TIẾT CÔNG NỢ (TOP 15):**
+{debt_details if debt_details else 'Không có công nợ'}
+
+## Nguyên tắc hỗ trợ
+
+1. **Phân tích chính xác:** Dùng đúng số liệu trên, không bịa.
+2. **Đề xuất hành động:** Sau mỗi phân tích, luôn đề xuất ít nhất 1-2 hành động quản trị cụ thể (nhắc nợ, điều chỉnh giá, gia hạn hợp đồng...).
+3. **Cảnh báo chủ động:** Nếu công nợ cao hoặc nhiều phòng trống, hãy tự động cảnh báo và gợi ý giải pháp.
+4. **Format rõ ràng:** Dùng **bold**, table, bullet list cho dễ đọc. Số tiền luôn format VNĐ.
+5. **Báo cáo nhanh:** Khi Admin hỏi tổng quan, cung cấp tóm tắt dashboard ngắn gọn + highlight vấn đề nổi bật.
+6. **Dự báo:** Nếu có dữ liệu hợp đồng sắp hết hạn hoặc nợ tồn đọng, cảnh báo rủi ro doanh thu.
 """
 
         chat_history = st.session_state.get('admin_ai_chat_history', [])
@@ -3711,7 +3907,7 @@ def main() -> None:
             render_audit_logs()
         elif selected == "Quản lý User":
             render_user_management(user)
-        elif selected == "📨 Trung tâm Thông báo":
+        elif selected in ("📨 Trung tâm Thông báo", "Trung tâm Thông báo"):
             render_admin_notifications(user)
         elif selected == "Trợ lý AI":
             render_ai_agent(user)
@@ -3725,7 +3921,7 @@ def main() -> None:
             render_user_contracts(user)
         elif selected == "Hóa đơn của tôi":
             render_user_payments(user)
-        elif selected == "🔔 Thông báo của tôi":
+        elif selected in ("🔔 Thông báo của tôi", "Thông báo của tôi"):
             render_user_notifications(user)
         elif selected == "Trợ lý AI":
             render_user_ai_assistant(user)
@@ -4100,42 +4296,50 @@ def get_notification_badge_html(count: int) -> str:
 
 
 def render_sidebar_with_notifications(user: SessionUser) -> str:
-    """Sidebar with notification badges"""
+    """Sidebar with notification badges, icons, and collapsible sections"""
     with st.sidebar:
-        st.markdown("### Chức năng")
-
         with get_db() as db:
             unread_count = get_unread_count(db, user.user_id) if user.role != "admin" else 0
 
         if user.role == "admin":
-            options = [
-                "Dashboard",
-                "Quản lý phòng",
-                "Quản lý người thuê",
-                "Quản lý hợp đồng",
-                "Quản lý hóa đơn",
-                "Gợi ý giá thuê",
-                "Audit Log",
-                "Quản lý User",
-                "📨 Trung tâm Thông báo",
-                "Trợ lý AI",
-            ]
+            menu_groups = {
+                "QUẢN LÝ": [
+                    ("🏠", "Dashboard", "Tổng quan hệ thống"),
+                    ("🚪", "Quản lý phòng", "Phòng trọ & hình ảnh"),
+                    ("👥", "Quản lý người thuê", "Hồ sơ người thuê"),
+                    ("📄", "Quản lý hợp đồng", "Hợp đồng thuê"),
+                    ("💳", "Quản lý hóa đơn", "Thanh toán & hóa đơn"),
+                ],
+                "CÔNG CỤ": [
+                    ("💡", "Gợi ý giá thuê", "AI gợi ý giá"),
+                    ("📋", "Audit Log", "Lịch sử thay đổi"),
+                    ("👤", "Quản lý User", "Tài khoản người dùng"),
+                    ("📨", "📨 Trung tâm Thông báo", "Gửi & quản lý thông báo"),
+                    ("🤖", "Trợ lý AI", "AI Agent vận hành"),
+                ],
+            }
+            flat_options = [item[1] for group in menu_groups.values() for item in group]
         else:
-            badge = f" 🔴 ({unread_count})" if unread_count > 0 else ""
-            options = [
-                "Danh sách phòng",
-                "Gợi ý giá thuê",
-                "Hợp đồng của tôi",
-                "Hóa đơn của tôi",
-                f"🔔 Thông báo của tôi{badge}",
-                "Trợ lý AI",
-            ]
+            badge = f" ({unread_count})" if unread_count > 0 else ""
+            menu_groups = {
+                "TIỆN ÍCH": [
+                    ("🏠", "Danh sách phòng", "Xem phòng cho thuê"),
+                    ("💡", "Gợi ý giá thuê", "AI gợi ý giá thuê"),
+                    ("📄", "Hợp đồng của tôi", "Hợp đồng đang có"),
+                    ("💳", "Hóa đơn của tôi", "Thanh toán MoMo"),
+                    ("🔔", f"🔔 Thông báo của tôi", f"Thông báo{badge}"),
+                    ("🤖", "Trợ lý AI", "Hỏi đáp tự động"),
+                ],
+            }
+            flat_options = [item[1] for group in menu_groups.values() for item in group]
 
-        # Use session state for menu selection
+        # Use session state for menu selection and collapse state
         if "selected_menu" not in st.session_state:
-            st.session_state.selected_menu = options[0]
+            st.session_state.selected_menu = flat_options[0]
+        if "sidebar_collapsed" not in st.session_state:
+            st.session_state.sidebar_collapsed = False
 
-        # Custom CSS for button-style menu
+        # Custom CSS
         st.markdown("""
         <style>
         [data-testid="stSidebar"] .stButton > button {
@@ -4144,11 +4348,12 @@ def render_sidebar_with_notifications(user: SessionUser) -> str:
             background: transparent;
             border: none;
             color: #e2e8f0;
-            padding: 0.6rem 1rem;
-            margin: 0.2rem 0;
+            padding: 0.5rem 0.75rem;
+            margin: 0.1rem 0;
             border-radius: 8px;
             font-weight: 500;
             transition: all 0.2s;
+            font-size: 0.88rem;
         }
         [data-testid="stSidebar"] .stButton > button:hover {
             background: rgba(255,255,255,0.1);
@@ -4157,30 +4362,71 @@ def render_sidebar_with_notifications(user: SessionUser) -> str:
         [data-testid="stSidebar"] .stButton > button[kind="primary"] {
             background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
             color: white;
+            font-weight: 600;
+        }
+        .sidebar-group-label {
+            color: #64748b;
+            font-size: 0.7rem;
+            font-weight: 700;
+            letter-spacing: 0.08em;
+            padding: 0.6rem 0.5rem 0.2rem 0.5rem;
+            margin-top: 0.4rem;
+        }
+        .sidebar-item-desc {
+            color: #94a3b8;
+            font-size: 0.72rem;
+            margin-left: 0.5rem;
         }
         </style>
         """, unsafe_allow_html=True)
 
-        # Navigation buttons
-        st.markdown("<div style='margin-bottom: 0.5rem; color: #94a3b8; font-size: 0.75rem; font-weight: 600;'>MENU</div>", unsafe_allow_html=True)
-        for option in options:
-            # Clean badge from option for comparison
-            clean_option = option.split(" 🔴")[0] if "🔴" in option else option
-            btn_type = "primary" if st.session_state.selected_menu == clean_option else "secondary"
-            if st.button(clean_option, key=f"nav_{clean_option}", use_container_width=True, type=btn_type):
-                st.session_state.selected_menu = clean_option
+        # App title + collapse toggle
+        col_title, col_toggle = st.columns([3, 1])
+        with col_title:
+            st.markdown("<div style='font-weight:700;font-size:1rem;color:#e2e8f0;padding:0.3rem 0;'>Chức năng</div>", unsafe_allow_html=True)
+        with col_toggle:
+            toggle_label = "▲" if not st.session_state.sidebar_collapsed else "▼"
+            if st.button(toggle_label, key="toggle_sidebar", help="Thu gọn / Mở rộng menu"):
+                st.session_state.sidebar_collapsed = not st.session_state.sidebar_collapsed
+                st.rerun()
+
+        if not st.session_state.sidebar_collapsed:
+            for group_name, items in menu_groups.items():
+                st.markdown(f"<div class='sidebar-group-label'>{group_name}</div>", unsafe_allow_html=True)
+                for icon, option, desc in items:
+                    # Normalize key: strip emoji prefix if option already has it
+                    clean_key = option.replace("📨 ", "").replace("🔔 ", "")
+                    is_active = st.session_state.selected_menu == option or st.session_state.selected_menu == clean_key
+                    btn_type = "primary" if is_active else "secondary"
+                    label = f"{icon} {option}" if not option.startswith(icon) else option
+                    # Add unread badge inline for notifications
+                    if "Thông báo" in option and unread_count > 0 and user.role != "admin":
+                        label = f"{icon} Thông báo của tôi  🔴{unread_count}"
+                    if st.button(label, key=f"nav_{clean_key}", use_container_width=True, type=btn_type, help=desc):
+                        st.session_state.selected_menu = option
+                        st.rerun()
+        else:
+            st.markdown("<div style='color:#94a3b8;font-size:0.8rem;padding:0.5rem;'>Menu đã thu gọn</div>", unsafe_allow_html=True)
+            if st.button("▼ Mở menu", key="expand_menu", use_container_width=True):
+                st.session_state.sidebar_collapsed = False
                 st.rerun()
 
         st.markdown("---")
+        role_label = "Quản trị viên" if user.role == "admin" else "Người thuê"
         st.markdown(
-            f"<div class='muted-box'><b>{user.full_name}</b><br>{user.username} • {user.role}</div>",
+            f"<div class='muted-box'><b>{user.full_name}</b><br><span style='font-size:0.8rem;color:#94a3b8;'>{user.username} • {role_label}</span></div>",
             unsafe_allow_html=True,
         )
-        if st.button("Đăng xuất"):
+        if st.button("🚪 Đăng xuất", use_container_width=True):
             logout()
             st.rerun()
 
-    return st.session_state.selected_menu
+    # Normalize selected_menu for routing
+    selected = st.session_state.selected_menu
+    # Strip emoji prefix variants for consistent routing
+    if selected.startswith("📨 "):
+        selected = selected[3:]
+    return selected
 
 
 if __name__ == "__main__":
